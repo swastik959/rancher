@@ -50,7 +50,7 @@ const (
 var (
 	primaryImages = map[string]string{
 		chart.WebhookChartName:           "rancher/rancher-webhook",
-		chart.ProvisioningCAPIChartName:  "rancher/mirrored-cluster-api-controller",
+		chart.ProvisioningCAPIChartName:  "registry.k8s.io/cluster-api/cluster-api-controller",
 		chart.RemoteDialerProxyChartName: "rancher/remotedialer-proxy",
 		chart.TurtlesChartName:           "rancher/turtles",
 	}
