@@ -455,7 +455,7 @@ func (v *Validator) eksAccountID(secretRef, region string) string {
 			Region:      stsRegion,
 			Credentials: credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
 		}
-	} else {
+	} else if useInstanceProfile {
 		// Only an instance profile is configured, resolve credentials from the
 		// default AWS credential chain (e.g. the EC2 instance profile).
 		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(stsRegion))
@@ -463,6 +463,8 @@ func (v *Validator) eksAccountID(secretRef, region string) string {
 			logrus.Warnf("EKS duplicate validation: failed to load default AWS config for %s: %v", secretRef, err)
 			return ""
 		}
+	} else {
+		return ""
 	}
 	out, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
