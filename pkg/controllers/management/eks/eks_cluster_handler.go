@@ -582,14 +582,18 @@ func (e *eksOperatorController) getAWSSession(cluster *mgmtv3.Cluster) (*session
 
 		accessKeyBytes := secret.Data["amazonec2credentialConfig-accessKey"]
 		secretKeyBytes := secret.Data["amazonec2credentialConfig-secretKey"]
-		if accessKeyBytes == nil || secretKeyBytes == nil {
+		useInstanceProfile := strings.TrimSpace(string(secret.Data["amazonec2credentialConfig-useInstanceProfile"])) == "true"
+
+		switch {
+		case accessKeyBytes != nil && secretKeyBytes != nil:
+			// Explicit static credentials always take precedence when provided.
+			awsConfig.Credentials = credentials.NewStaticCredentials(string(accessKeyBytes), string(secretKeyBytes), "")
+		case useInstanceProfile:
+			// No static credentials provided, fall back to the default AWS
+			// credential chain (e.g. the EC2 instance profile / IAM role).
+		default:
 			return nil, fmt.Errorf("invalid aws cloud credential")
 		}
-
-		accessKey := string(accessKeyBytes)
-		secretKey := string(secretKeyBytes)
-
-		awsConfig.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, "")
 	}
 
 	sess, err := session.NewSession(awsConfig)
