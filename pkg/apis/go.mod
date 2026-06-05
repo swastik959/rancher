@@ -103,3 +103,5 @@ require (
 	sigs.k8s.io/structured-merge-diff/v6 v6.4.0 // indirect
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
+
+replace github.com/rancher/eks-operator => github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12
