@@ -11,6 +11,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/resourcemanager/containerservice/armcontainerservice/v5"
 	"github.com/Azure/go-autorest/autorest/to"
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/rancher/norman/api/access"
@@ -434,7 +435,8 @@ func (v *Validator) eksAccountID(secretRef, region string) string {
 	}
 	accessKey := string(secret.Data["amazonec2credentialConfig-accessKey"])
 	secretKey := string(secret.Data["amazonec2credentialConfig-secretKey"])
-	if accessKey == "" || secretKey == "" {
+	useInstanceProfile := strings.TrimSpace(string(secret.Data["amazonec2credentialConfig-useInstanceProfile"])) == "true"
+	if (accessKey == "" || secretKey == "") && !useInstanceProfile {
 		return ""
 	}
 
@@ -444,12 +446,26 @@ func (v *Validator) eksAccountID(secretRef, region string) string {
 	if stsRegion == "" {
 		stsRegion = "us-east-1"
 	}
-	cfg := aws.Config{
-		Region:      stsRegion,
-		Credentials: credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), stsAccountIDTimeout)
 	defer cancel()
+
+	var cfg aws.Config
+	if accessKey != "" && secretKey != "" {
+		cfg = aws.Config{
+			Region:      stsRegion,
+			Credentials: credentials.NewStaticCredentialsProvider(accessKey, secretKey, ""),
+		}
+	} else if useInstanceProfile {
+		// Only an instance profile is configured, resolve credentials from the
+		// default AWS credential chain (e.g. the EC2 instance profile).
+		cfg, err = config.LoadDefaultConfig(ctx, config.WithRegion(stsRegion))
+		if err != nil {
+			logrus.Warnf("EKS duplicate validation: failed to load default AWS config for %s: %v", secretRef, err)
+			return ""
+		}
+	} else {
+		return ""
+	}
 	out, err := sts.NewFromConfig(cfg).GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
 	if err != nil {
 		logrus.Warnf("EKS duplicate validation: STS GetCallerIdentity failed for %s: %v", secretRef, err)
