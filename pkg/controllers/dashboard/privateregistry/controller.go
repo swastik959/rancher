@@ -456,7 +456,12 @@ func (h *handler) manageClusterSpecificPSS(_ string, cluster *v3.Cluster) (*v3.C
 func (h *handler) syncClusterOnGlobalPullSecretChange(_ string, _ string, obj runtime.Object) ([]relatedresource.Key, error) {
 	sec, ok := obj.(*kcorev1.Secret)
 	if !ok {
-		logrus.Errorf("[private-registry] failed to convert to secret")
+		// This resolver is registered as a generic handler on the secret
+		// controller, which invokes it with a nil object on every secret
+		// deletion. That is normal control-flow (there is nothing to
+		// re-enqueue), so it must not be logged at error level to avoid
+		// flooding the logs as secrets are routinely created and rotated.
+		logrus.Tracef("[private-registry] skipping non-secret object in global pull secret resolver")
 		return nil, nil
 	}
 	if sec.Labels == nil || sec.Labels[util.SourcePullSecretLabel] != "true" {
