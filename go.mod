@@ -423,3 +423,5 @@ require (
 	sigs.k8s.io/kustomize/api v0.21.1 // indirect
 	sigs.k8s.io/kustomize/kyaml v0.21.1 // indirect
 )
+
+replace github.com/rancher/eks-operator => github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12
