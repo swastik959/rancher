@@ -68,8 +68,6 @@ github.com/rancher/aks-operator v1.15.0-rc.1 h1:+a6A3a1eGgtZVG+/Xi0us/4HVQSsG9j3
 github.com/rancher/aks-operator v1.15.0-rc.1/go.mod h1:cAYS9zWnBcUDn2DPQbYbRty/gyYHXHKr5V9MUB7gG7w=
 github.com/rancher/ali-operator v1.15.0-rc.1 h1:NpYxzQQj/Df7427UrBaOvGRMH2lsD4RvPRJ9xr1uWj0=
 github.com/rancher/ali-operator v1.15.0-rc.1/go.mod h1:jKlIQni2diC19zEvFn/fTOlEj8ruTrODnI8X57ncNVI=
-github.com/rancher/eks-operator v1.15.0-rc.1 h1:E/nQzCKn6SriPtD6bLG4G7YTx8CEmSG+bSMEL7tryo0=
-github.com/rancher/eks-operator v1.15.0-rc.1/go.mod h1:k1PjsU9oG9mwwTSJmBfAs3snJ6VQ/6pPZK2HNI8KrVk=
 github.com/rancher/fleet/pkg/apis v0.16.0-alpha.9 h1:kzPt2G5ytmVXoh9ST7L7Rt2cdwM7ItIZZyY5wosU6xY=
 github.com/rancher/fleet/pkg/apis v0.16.0-alpha.9/go.mod h1:NjLJbrJ76K5vf8Djv3evIL1RnS4WDu8RpEjnyisIPRI=
 github.com/rancher/gke-operator v1.15.0-rc.1 h1:ZkwK9J2KLuu4PlScm2HShUb6koKbXjbmihuENkk4TV8=
@@ -92,6 +90,8 @@ github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/
 github.com/stretchr/testify v1.3.0/go.mod h1:M5WIy9Dh21IEIfnGCwXGc5bZfKNJtfHm1UVUgZn+9EI=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
 github.com/stretchr/testify v1.11.1/go.mod h1:wZwfW3scLgRK+23gO65QZefKpKQRnfz6sD981Nm4B6U=
+github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12 h1:vTePB9HCyPFcWq8K7Dol75m6kiZ58gIOsaiXNa64ewg=
+github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12/go.mod h1:K4BN3aeH9fQ37xB3APVwhHXGWJ8NbkOvIlifPE9MY3w=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=

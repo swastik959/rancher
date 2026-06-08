@@ -602,8 +602,6 @@ github.com/rancher/channelserver v0.11.0 h1:R1oRG2SkGkC0EKHsa+VgBuLKHzEGVE1NMJeP
 github.com/rancher/channelserver v0.11.0/go.mod h1:ZWuXGR708g5FoMdmf+fXE2XEOztdm3bcwjdMmriY1kg=
 github.com/rancher/dynamiclistener v0.9.0-rc.1 h1:tmV3fgvB5pXSOMrb7G1DSno5C9XTfoyzHaDeVRhtUd0=
 github.com/rancher/dynamiclistener v0.9.0-rc.1/go.mod h1:HG2E4ZcZKAc6JymJLy74ROKMTtsKyrA1fyQSR/g/+0w=
-github.com/rancher/eks-operator v1.15.0-rc.1 h1:E/nQzCKn6SriPtD6bLG4G7YTx8CEmSG+bSMEL7tryo0=
-github.com/rancher/eks-operator v1.15.0-rc.1/go.mod h1:k1PjsU9oG9mwwTSJmBfAs3snJ6VQ/6pPZK2HNI8KrVk=
 github.com/rancher/fleet/pkg/apis v0.16.0-alpha.9 h1:kzPt2G5ytmVXoh9ST7L7Rt2cdwM7ItIZZyY5wosU6xY=
 github.com/rancher/fleet/pkg/apis v0.16.0-alpha.9/go.mod h1:NjLJbrJ76K5vf8Djv3evIL1RnS4WDu8RpEjnyisIPRI=
 github.com/rancher/gke-operator v1.15.0-rc.1 h1:ZkwK9J2KLuu4PlScm2HShUb6koKbXjbmihuENkk4TV8=
@@ -694,6 +692,8 @@ github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
 github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
 github.com/stretchr/testify v1.10.0 h1:Xv5erBjTwe/5IxqUQTdXv5kgmIvbHo3QQyRwhJsOfJA=
 github.com/stretchr/testify v1.10.0/go.mod h1:r2ic/lqez/lEtzL7wO/rwa5dbSLXVDPFyf8C91i36aY=
+github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12 h1:vTePB9HCyPFcWq8K7Dol75m6kiZ58gIOsaiXNa64ewg=
+github.com/swastik959/eks-operator v1.12.0-rc.1.0.20260528082813-d04d53353e12/go.mod h1:K4BN3aeH9fQ37xB3APVwhHXGWJ8NbkOvIlifPE9MY3w=
 github.com/tinylib/msgp v1.6.4 h1:mOwYbyYDLPj35mkA2BjjYejgJk9BuHxDdvRnb6v2ZcQ=
 github.com/tinylib/msgp v1.6.4/go.mod h1:RSp0LW9oSxFut3KzESt5Voq4GVWyS+PSulT77roAqEA=
 github.com/tjfoc/gmsm v1.4.1 h1:aMe1GlZb+0bLjn+cKTPEvvn9oUEBlJitaZiiBwsbgho=
