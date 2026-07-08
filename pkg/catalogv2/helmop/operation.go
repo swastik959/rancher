@@ -541,6 +541,14 @@ func (c Command) renderArgs() ([]string, error) {
 		dataMap["force-replace"] = v
 	}
 
+	// Map the serverSide field to the --server-side flag. This allows callers to
+	// explicitly enable or disable server-side apply (e.g. --server-side=false).
+	// takeOwnership below still forces server-side apply on when enabled.
+	if v, ok := dataMap["serverSide"]; ok {
+		delete(dataMap, "serverSide")
+		dataMap["server-side"] = v
+	}
+
 	if v, ok := dataMap["takeOwnership"]; ok && convert.ToString(v) == "true" {
 		dataMap["force-conflicts"] = "true"
 		dataMap["server-side"] = "true"
