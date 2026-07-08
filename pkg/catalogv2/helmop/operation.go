@@ -543,7 +543,7 @@ func (c Command) renderArgs() ([]string, error) {
 
 	// Map the serverSide field to the --server-side flag. This allows callers to
 	// explicitly enable or disable server-side apply (e.g. --server-side=false).
-	// takeOwnership below still forces server-side apply on when enabled.
+	// takeOwnership below still forces server-side apply to be on when enabled.
 	if v, ok := dataMap["serverSide"]; ok {
 		delete(dataMap, "serverSide")
 		dataMap["server-side"] = v
