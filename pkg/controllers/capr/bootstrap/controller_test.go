@@ -5,7 +5,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"testing"
+	"time"
 
+	rkev1 "github.com/rancher/rancher/pkg/apis/rke.cattle.io/v1"
 	"github.com/rancher/rancher/pkg/capr"
 	"github.com/rancher/rancher/pkg/namespace"
 	"github.com/rancher/rancher/pkg/settings"
@@ -14,8 +16,10 @@ import (
 	"go.uber.org/mock/gomock"
 	v1apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
 	capi "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -304,4 +308,122 @@ func TestShouldCreateBootstrapSecret(t *testing.T) {
 			assert.Equal(t, tt.expected, actual)
 		})
 	}
+}
+
+func Test_reconcileMachinePreTerminateAnnotation(t *testing.T) {
+	const (
+		testNamespace   = "fleet-default"
+		testClusterName = "test-cluster"
+	)
+
+	newBootstrap := func() *rkev1.RKEBootstrap {
+		return &rkev1.RKEBootstrap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-bootstrap",
+				Namespace: testNamespace,
+				OwnerReferences: []metav1.OwnerReference{
+					{
+						APIVersion: capi.GroupVersion.String(),
+						Kind:       "Machine",
+						Name:       "test-machine",
+					},
+				},
+			},
+			Spec: rkev1.RKEBootstrapSpec{ClusterName: testClusterName},
+		}
+	}
+
+	newEtcdMachine := func(name string, deleting bool) *capi.Machine {
+		machine := &capi.Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        name,
+				Namespace:   testNamespace,
+				Labels:      map[string]string{capr.EtcdRoleLabel: "true", capi.ClusterNameLabel: testClusterName},
+				Annotations: map[string]string{},
+			},
+			Spec:   capi.MachineSpec{ClusterName: testClusterName},
+			Status: capi.MachineStatus{NodeRef: capi.MachineNodeReference{Name: name}},
+		}
+		if deleting {
+			machine.DeletionTimestamp = &metav1.Time{Time: time.Now()}
+			machine.Annotations[capiMachinePreTerminateAnnotation] = capiMachinePreTerminateAnnotationOwner
+		}
+		return machine
+	}
+
+	t.Run("deleting etcd machine has its pre-terminate hook removed", func(t *testing.T) {
+		// A deleting etcd machine must not have the removal of its pre-terminate hook deferred, otherwise
+		// CAPI is never able to finish deleting the machine and cluster deletion hangs indefinitely.
+		ctrl := gomock.NewController(t)
+		bootstrap := newBootstrap()
+		deletingMachine := newEtcdMachine("test-machine", true)
+		remainingMachine := newEtcdMachine("other-machine", false)
+
+		machineCache := ctrlfake.NewMockCacheInterface[*capi.Machine](ctrl)
+		machineCache.EXPECT().Get(testNamespace, "test-machine").Return(deletingMachine, nil).AnyTimes()
+		machineCache.EXPECT().List(testNamespace, gomock.Any()).Return([]*capi.Machine{deletingMachine, remainingMachine}, nil).AnyTimes()
+
+		var updated *capi.Machine
+		machineClient := ctrlfake.NewMockClientInterface[*capi.Machine, *capi.MachineList](ctrl)
+		machineClient.EXPECT().Update(gomock.Any()).DoAndReturn(func(machine *capi.Machine) (*capi.Machine, error) {
+			updated = machine
+			return machine, nil
+		}).Times(1)
+
+		capiClusterCache := ctrlfake.NewMockCacheInterface[*capi.Cluster](ctrl)
+		capiClusterCache.EXPECT().Get(testNamespace, testClusterName).Return(&capi.Cluster{
+			ObjectMeta: metav1.ObjectMeta{Name: testClusterName, Namespace: testNamespace},
+			Spec: capi.ClusterSpec{
+				ControlPlaneRef: capi.ContractVersionedObjectReference{
+					APIGroup: "rke.cattle.io",
+					Kind:     "RKEControlPlane",
+					Name:     testClusterName,
+				},
+			},
+		}, nil).AnyTimes()
+
+		rkeControlPlaneCache := ctrlfake.NewMockCacheInterface[*rkev1.RKEControlPlane](ctrl)
+		rkeControlPlaneCache.EXPECT().Get(testNamespace, testClusterName).Return(&rkev1.RKEControlPlane{
+			ObjectMeta: metav1.ObjectMeta{Name: testClusterName, Namespace: testNamespace},
+		}, nil).AnyTimes()
+
+		secretCache := ctrlfake.NewMockCacheInterface[*v1.Secret](ctrl)
+		secretCache.EXPECT().Get(testNamespace, gomock.Any()).Return(nil, apierrors.NewNotFound(schema.GroupResource{Resource: "secrets"}, "")).AnyTimes()
+
+		h := handler{
+			machineCache:     machineCache,
+			machineClient:    machineClient,
+			capiClusterCache: capiClusterCache,
+			rkeControlPlanes: rkeControlPlaneCache,
+			secretCache:      secretCache,
+		}
+
+		_, err := h.reconcileMachinePreTerminateAnnotation(bootstrap)
+		assert.Nil(t, err)
+		assert.NotNil(t, updated)
+		assert.NotContains(t, updated.Annotations, capiMachinePreTerminateAnnotation)
+	})
+
+	t.Run("running etcd machine gets the pre-terminate hook", func(t *testing.T) {
+		ctrl := gomock.NewController(t)
+		bootstrap := newBootstrap()
+		machine := newEtcdMachine("test-machine", false)
+
+		machineCache := ctrlfake.NewMockCacheInterface[*capi.Machine](ctrl)
+		machineCache.EXPECT().Get(testNamespace, "test-machine").Return(machine, nil).AnyTimes()
+
+		var updated *capi.Machine
+		machineClient := ctrlfake.NewMockClientInterface[*capi.Machine, *capi.MachineList](ctrl)
+		machineClient.EXPECT().Update(gomock.Any()).DoAndReturn(func(machine *capi.Machine) (*capi.Machine, error) {
+			updated = machine
+			return machine, nil
+		}).Times(1)
+
+		h := handler{machineCache: machineCache, machineClient: machineClient}
+
+		_, err := h.reconcileMachinePreTerminateAnnotation(bootstrap)
+		assert.Nil(t, err)
+		assert.NotNil(t, updated)
+		assert.Equal(t, capiMachinePreTerminateAnnotationOwner, updated.Annotations[capiMachinePreTerminateAnnotation])
+	})
 }
