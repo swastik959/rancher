@@ -11,10 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/eks"
 	eksv1 "github.com/rancher/eks-operator/pkg/apis/eks.cattle.io/v1"
 	"github.com/rancher/eks-operator/utils"
@@ -51,6 +52,9 @@ const (
 	eksShortName        = "EKS"
 	enqueueTime         = time.Second * 5
 	importedAnno        = "eks.cattle.io/imported"
+	// defaultRegion is used when a cluster has no region configured. STS GetCallerIdentity is
+	// region-agnostic, but the SDK still requires a region to resolve an endpoint.
+	defaultRegion = "us-east-1"
 )
 
 type eksOperatorController struct {
@@ -446,7 +450,7 @@ func (e *eksOperatorController) generateAndSetServiceAccount(cluster *mgmtv3.Clu
 		return cluster, err
 	}
 
-	restConfig, err := e.getRestConfig(cluster)
+	restConfig, err := e.getRestConfig(context.TODO(), cluster)
 	if err != nil {
 		return cluster, err
 	}
@@ -533,7 +537,7 @@ var publicDialer = &transport.DialHolder{
 // If an error different from the two below occur, then the *bool return value will be nil, indicating that Rancher was not able to determine if
 // tunneling is required to communicate with the cluster.
 func (e *eksOperatorController) generateSATokenWithPublicAPI(cluster *mgmtv3.Cluster) (string, *bool, error) {
-	restConfig, err := e.getRestConfig(cluster)
+	restConfig, err := e.getRestConfig(context.TODO(), cluster)
 	if err != nil {
 		return "", nil, err
 	}
@@ -565,54 +569,65 @@ func (e *eksOperatorController) generateSATokenWithPublicAPI(cluster *mgmtv3.Clu
 	return serviceToken, requiresTunnel, err
 }
 
-func (e *eksOperatorController) getAWSSession(cluster *mgmtv3.Cluster) (*session.Session, error) {
-	awsConfig := &aws.Config{}
+// getAWSConfig builds an AWS SDK config for the given cluster. The region and the credentials are
+// always supplied explicitly so that the SDK never falls back to the ambient credential chain
+// (environment, shared config, or the instance/IRSA role of the Rancher server itself), which
+// would authenticate as the wrong identity.
+func (e *eksOperatorController) getAWSConfig(ctx context.Context, cluster *mgmtv3.Cluster) (aws.Config, error) {
 	eksConfig := cluster.Spec.EKSConfig
 
-	if region := eksConfig.Region; region != "" {
-		awsConfig.Region = aws.String(region)
+	region := eksConfig.Region
+	if region == "" {
+		logrus.Warnf("no region configured for cluster [%s], defaulting to [%s]", cluster.Name, defaultRegion)
+		region = defaultRegion
 	}
 
-	ns, id := utils.Parse(eksConfig.AmazonCredentialSecret)
+	var accessKey, secretKey string
 	if amazonCredentialSecret := eksConfig.AmazonCredentialSecret; amazonCredentialSecret != "" {
+		ns, id := utils.Parse(amazonCredentialSecret)
 		secret, err := e.SecretsCache.Get(ns, id)
 		if err != nil {
-			return nil, fmt.Errorf("error getting secret %s/%s: %w", ns, id, err)
+			return aws.Config{}, fmt.Errorf("error getting secret %s/%s: %w", ns, id, err)
 		}
 
 		accessKeyBytes := secret.Data["amazonec2credentialConfig-accessKey"]
 		secretKeyBytes := secret.Data["amazonec2credentialConfig-secretKey"]
 		if accessKeyBytes == nil || secretKeyBytes == nil {
-			return nil, fmt.Errorf("invalid aws cloud credential")
+			return aws.Config{}, fmt.Errorf("invalid aws cloud credential")
 		}
 
-		accessKey := string(accessKeyBytes)
-		secretKey := string(secretKeyBytes)
-
-		awsConfig.Credentials = credentials.NewStaticCredentials(accessKey, secretKey, "")
+		accessKey = string(accessKeyBytes)
+		secretKey = string(secretKeyBytes)
 	}
 
-	sess, err := session.NewSession(awsConfig)
+	awsConfig, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("error getting new aws session: %w", err)
+		return aws.Config{}, fmt.Errorf("error getting new aws config: %w", err)
 	}
-	return sess, nil
+
+	return awsConfig, nil
 }
 
-func (e *eksOperatorController) getAccessToken(cluster *mgmtv3.Cluster) (string, error) {
-	sess, err := e.getAWSSession(cluster)
+// getAccessToken generates a bearer token for the cluster's EKS API endpoint. The token is a
+// presigned sts:GetCallerIdentity request, so it has to be signed with the credentials Rancher
+// holds for this cluster. The generator's GetWithOptions builds its own config from the ambient
+// credential chain and offers no way to inject credentials, so the STS client is built here and
+// handed to GetWithSTS instead.
+func (e *eksOperatorController) getAccessToken(ctx context.Context, cluster *mgmtv3.Cluster) (string, error) {
+	awsConfig, err := e.getAWSConfig(ctx, cluster)
 	if err != nil {
 		return "", err
 	}
+
 	generator, err := token.NewGenerator(false, false)
 	if err != nil {
 		return "", err
 	}
 
-	awsToken, err := generator.GetWithOptions(&token.GetTokenOptions{
-		Session:   sess,
-		ClusterID: cluster.Spec.EKSConfig.DisplayName,
-	})
+	awsToken, err := generator.GetWithSTS(cluster.Spec.EKSConfig.DisplayName, sts.NewFromConfig(awsConfig))
 	if err != nil {
 		return "", err
 	}
@@ -620,8 +635,8 @@ func (e *eksOperatorController) getAccessToken(cluster *mgmtv3.Cluster) (string,
 	return awsToken.Token, nil
 }
 
-func (e *eksOperatorController) getRestConfig(cluster *mgmtv3.Cluster) (*rest.Config, error) {
-	accessToken, err := e.getAccessToken(cluster)
+func (e *eksOperatorController) getRestConfig(ctx context.Context, cluster *mgmtv3.Cluster) (*rest.Config, error) {
+	accessToken, err := e.getAccessToken(ctx, cluster)
 	if err != nil {
 		return nil, err
 	}
