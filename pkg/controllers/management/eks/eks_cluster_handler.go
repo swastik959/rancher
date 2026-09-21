@@ -52,6 +52,9 @@ const (
 	eksShortName        = "EKS"
 	enqueueTime         = time.Second * 5
 	importedAnno        = "eks.cattle.io/imported"
+	// defaultRegion is used when a cluster has no region configured. STS GetCallerIdentity is
+	// region-agnostic, but the SDK still requires a region to resolve an endpoint.
+	defaultRegion = "us-east-1"
 )
 
 type eksOperatorController struct {
@@ -566,38 +569,43 @@ func (e *eksOperatorController) generateSATokenWithPublicAPI(cluster *mgmtv3.Clu
 	return serviceToken, requiresTunnel, err
 }
 
-// getAWSConfig builds an AWS SDK config for the given cluster. When the cluster has a cloud
-// credential configured, that credential is used instead of the ambient credentials available
-// to the Rancher server.
+// getAWSConfig builds an AWS SDK config for the given cluster. The region and the credentials are
+// always supplied explicitly so that the SDK never falls back to the ambient credential chain
+// (environment, shared config, or the instance/IRSA role of the Rancher server itself), which
+// would authenticate as the wrong identity.
 func (e *eksOperatorController) getAWSConfig(ctx context.Context, cluster *mgmtv3.Cluster) (aws.Config, error) {
 	eksConfig := cluster.Spec.EKSConfig
 
-	awsConfig, err := awsconfig.LoadDefaultConfig(ctx)
-	if err != nil {
-		return awsConfig, fmt.Errorf("error getting new aws config: %w", err)
+	region := eksConfig.Region
+	if region == "" {
+		logrus.Warnf("no region configured for cluster [%s], defaulting to [%s]", cluster.Name, defaultRegion)
+		region = defaultRegion
 	}
 
-	if region := eksConfig.Region; region != "" {
-		awsConfig.Region = region
-	}
-
+	var accessKey, secretKey string
 	if amazonCredentialSecret := eksConfig.AmazonCredentialSecret; amazonCredentialSecret != "" {
 		ns, id := utils.Parse(amazonCredentialSecret)
 		secret, err := e.SecretsCache.Get(ns, id)
 		if err != nil {
-			return awsConfig, fmt.Errorf("error getting secret %s/%s: %w", ns, id, err)
+			return aws.Config{}, fmt.Errorf("error getting secret %s/%s: %w", ns, id, err)
 		}
 
 		accessKeyBytes := secret.Data["amazonec2credentialConfig-accessKey"]
 		secretKeyBytes := secret.Data["amazonec2credentialConfig-secretKey"]
 		if accessKeyBytes == nil || secretKeyBytes == nil {
-			return awsConfig, fmt.Errorf("invalid aws cloud credential")
+			return aws.Config{}, fmt.Errorf("invalid aws cloud credential")
 		}
 
-		accessKey := string(accessKeyBytes)
-		secretKey := string(secretKeyBytes)
+		accessKey = string(accessKeyBytes)
+		secretKey = string(secretKeyBytes)
+	}
 
-		awsConfig.Credentials = credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")
+	awsConfig, err := awsconfig.LoadDefaultConfig(ctx,
+		awsconfig.WithRegion(region),
+		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("error getting new aws config: %w", err)
 	}
 
 	return awsConfig, nil
@@ -612,13 +620,6 @@ func (e *eksOperatorController) getAccessToken(ctx context.Context, cluster *mgm
 	awsConfig, err := e.getAWSConfig(ctx, cluster)
 	if err != nil {
 		return "", err
-	}
-
-	// STS GetCallerIdentity is region-agnostic, but the SDK requires a region to resolve an
-	// endpoint. Fall back to us-east-1, which is what the generator itself does when it cannot
-	// determine a region.
-	if awsConfig.Region == "" {
-		awsConfig.Region = "us-east-1"
 	}
 
 	generator, err := token.NewGenerator(false, false)

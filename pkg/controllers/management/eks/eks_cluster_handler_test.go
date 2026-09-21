@@ -278,12 +278,10 @@ Test_getAWSConfig
 
 The EKS bearer token is a presigned sts:GetCallerIdentity request, so whichever credentials end
 up on the config are the identity Rancher authenticates to the downstream cluster as. These
-tests pin that the cluster's own cloud credential wins over the ambient credential chain.
+tests pin that the cluster's own cloud credential is used and that the ambient AWS credential
+chain available to the Rancher server is never consulted.
 */
 func Test_getAWSConfig(t *testing.T) {
-	// Keep the ambient credential chain out of the assertions below.
-	isolateAWSEnv(t)
-
 	const (
 		accessKey = "test-access-key"
 		secretKey = "test-secret-key"
@@ -296,7 +294,17 @@ func Test_getAWSConfig(t *testing.T) {
 		},
 	}
 
+	// Ambient configuration that must never end up on the returned config.
+	setAmbientAWSEnv := func(t *testing.T) {
+		t.Helper()
+		t.Setenv("AWS_ACCESS_KEY_ID", "ambient-access-key")
+		t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret-key")
+		t.Setenv("AWS_REGION", "ambient-region")
+	}
+
 	t.Run("cloud credential is used instead of the ambient credentials", func(t *testing.T) {
+		setAmbientAWSEnv(t)
+
 		secrets := fake.NewMockCacheInterface[*corev1.Secret](gomock.NewController(t))
 		secrets.EXPECT().Get("cattle-global-data", "cc-abcde").Return(credentialSecret, nil)
 
@@ -317,7 +325,9 @@ func Test_getAWSConfig(t *testing.T) {
 		require.Equal(t, secretKey, creds.SecretAccessKey)
 	})
 
-	t.Run("cluster without a cloud credential falls back to the ambient credentials", func(t *testing.T) {
+	t.Run("cluster without a cloud credential does not inherit the ambient credentials", func(t *testing.T) {
+		setAmbientAWSEnv(t)
+
 		// No call to the secrets cache is expected here.
 		secrets := fake.NewMockCacheInterface[*corev1.Secret](gomock.NewController(t))
 
@@ -328,6 +338,28 @@ func Test_getAWSConfig(t *testing.T) {
 		})
 		require.NoError(t, err)
 		require.Equal(t, "us-west-2", awsConfig.Region)
+
+		// Retrieving empty static credentials fails rather than falling through to the
+		// environment, so the ambient identity can never sign a token by accident.
+		_, err = awsConfig.Credentials.Retrieve(context.Background())
+		require.ErrorContains(t, err, "static credentials are empty")
+	})
+
+	t.Run("cluster without a region falls back to the default region", func(t *testing.T) {
+		setAmbientAWSEnv(t)
+
+		secrets := fake.NewMockCacheInterface[*corev1.Secret](gomock.NewController(t))
+		secrets.EXPECT().Get("cattle-global-data", "cc-abcde").Return(credentialSecret, nil)
+
+		awsConfig, err := newTestEKSController(secrets).getAWSConfig(context.Background(), &v3.Cluster{
+			Spec: v3.ClusterSpec{
+				EKSConfig: &eksv1.EKSClusterConfigSpec{
+					AmazonCredentialSecret: "cattle-global-data:cc-abcde",
+				},
+			},
+		})
+		require.NoError(t, err)
+		require.Equal(t, defaultRegion, awsConfig.Region)
 	})
 
 	t.Run("incomplete cloud credential is rejected", func(t *testing.T) {
@@ -368,27 +400,6 @@ func newTestEKSController(secrets *fake.MockCacheInterface[*corev1.Secret]) *eks
 	return &eksOperatorController{
 		OperatorController: clusteroperator.OperatorController{SecretsCache: secrets},
 	}
-}
-
-// isolateAWSEnv stops any AWS configuration present on the machine running the tests from
-// leaking into the config built by the SDK's default credential chain.
-func isolateAWSEnv(t *testing.T) {
-	t.Helper()
-
-	for _, key := range []string{
-		"AWS_ACCESS_KEY_ID",
-		"AWS_SECRET_ACCESS_KEY",
-		"AWS_SESSION_TOKEN",
-		"AWS_PROFILE",
-		"AWS_REGION",
-		"AWS_DEFAULT_REGION",
-	} {
-		t.Setenv(key, "")
-	}
-
-	t.Setenv("AWS_CONFIG_FILE", "testdata/does-not-exist")
-	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", "testdata/does-not-exist")
-	t.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 }
 
 /*
