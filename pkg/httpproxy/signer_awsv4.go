@@ -6,14 +6,16 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go/aws/endpoints"
+	"sigs.k8s.io/aws-iam-authenticator/pkg/endpoints"
 )
 
 const (
@@ -23,8 +25,25 @@ const (
 	cnNorthwest1AWSRegion = "cn-northwest-1"
 )
 
-// List of global services for AWS from: https://docs.aws.amazon.com/general/latest/gr/rande.html#global-endpoints
-var globalAWSServices = []string{"cloudfront", "globalaccelerator", "iam", "networkmanager", "organizations", "route53", "shield", "waf"}
+// awsRegionRegexp matches AWS region names such as "us-east-1", "cn-northwest-1", "us-gov-west-1"
+// or "eusc-de-east-1". It generalizes the per partition regionRegex entries of the AWS partition
+// metadata, which the v2 SDK only ships in internal packages.
+var awsRegionRegexp = regexp.MustCompile(`^[a-z]{2,4}(-[a-z]+)+-\d+$`)
+
+// awsEndpointLabels are the hostname labels that AWS endpoints carry next to the service name,
+// for instance to flag FIPS, dual stack or VPC endpoints. They are never a service name.
+var awsEndpointLabels = map[string]bool{
+	"api":       true,
+	"dualstack": true,
+	"fips":      true,
+	"global":    true,
+	"us-gov":    true,
+	"vpce":      true,
+}
+
+// awsPartitionDNSSuffixes holds the DNS suffixes of every known AWS partition, longest first so
+// that the most specific suffix of a host is always matched first.
+var awsPartitionDNSSuffixes = partitionDNSSuffixes()
 
 var requiredHeadersForAws = map[string]bool{"host": true,
 	"x-amz-content-sha256": true,
@@ -84,25 +103,16 @@ func (a awsv4) sign(req *http.Request, secrets SecretGetter, auth string) error 
 	return nil
 }
 
+// getServiceAndRegion derives the SigV4 signing service and region from the host of the endpoint
+// the request is proxied to.
 func (a awsv4) getServiceAndRegion(host string) (string, string) {
-	service := ""
-	region := ""
-	for _, partition := range endpoints.DefaultPartitions() {
-		service, region = partitionServiceAndRegion(partition, host)
-		// Some services are global and don't have a region. If a partition returns a service
-		// that is global then stop processing partitions. If we carry on processing partitions
-		// for a global service then when new partitions are introduced the signing may break.
-		if service != "" && region == "" {
-			if slices.Contains(globalAWSServices, service) {
-				break
-			}
-		}
+	service, region := parseEndpointHost(host)
 
-		// empty region is valid, but if one is found it should be assumed correct
-		if region != "" {
-			return service, region
-		}
+	// empty region is valid, but if one is found it should be assumed correct
+	if region != "" {
+		return service, region
 	}
+
 	if strings.EqualFold(service, "iam") {
 		// This conditional is meant to cover a discrepancy in the IAM service for the China regions.
 		// The following doc states that IAM uses a globally unique endpoint, and the default
@@ -131,26 +141,129 @@ func (a awsv4) getServiceAndRegion(host string) (string, string) {
 	return service, defaultAWSRegion
 }
 
-func partitionServiceAndRegion(partition endpoints.Partition, host string) (string, string) {
-	service := ""
-	partitionServices := partition.Services()
-	for _, part := range strings.Split(host, ".") {
-		if id := partitionServices[part].ID(); id != "" {
-			service = id
-			break
+// parseEndpointHost splits an AWS endpoint host into its service name and its region, returning an
+// empty region for global endpoints and empty values for hosts that do not look like an AWS
+// endpoint.
+//
+// The partition and endpoint metadata that the v1 aws/endpoints package exposed has no equivalent
+// in the AWS SDK for Go v2, where it is only reachable through internal SDK packages. The values
+// are therefore derived from the structure of the endpoint host itself, which AWS documents as
+// the service name, an optional region and the DNS suffix of the partition, plus optional labels
+// such as "fips" or "dualstack":
+//
+//	ec2.us-west-2.amazonaws.com                 -> ec2, us-west-2
+//	iam.amazonaws.com                           -> iam, ""
+//	bucket.s3.dualstack.eu-west-1.amazonaws.com -> s3, eu-west-1
+//	s3-us-west-2.amazonaws.com                  -> s3, us-west-2
+func parseEndpointHost(host string) (string, string) {
+	labels := endpointLabels(host)
+	for i := len(labels) - 1; i >= 0; i-- {
+		if isAWSRegion(labels[i]) {
+			return endpointService(labels, i), labels[i]
+		}
+		// Older style endpoints join the service name and the region in a single label.
+		if service, region, ok := splitServiceRegion(labels[i]); ok {
+			return service, region
+		}
+	}
+	return endpointService(labels, len(labels)), ""
+}
+
+// endpointLabels strips the port and the DNS suffix of the partition from the given host and
+// returns the remaining hostname labels.
+func endpointLabels(host string) []string {
+	if hostWithoutPort, _, err := net.SplitHostPort(host); err == nil {
+		host = hostWithoutPort
+	}
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+
+	for _, suffix := range awsPartitionDNSSuffixes {
+		if trimmed, found := strings.CutSuffix(host, "."+suffix); found {
+			return strings.Split(trimmed, ".")
 		}
 	}
 
-	if service == "" {
-		return "", ""
+	// The host does not belong to a known partition, it can still be an AWS endpoint of a
+	// partition added after this list was built, or an AWS compatible endpoint hosted elsewhere.
+	// Drop the two labels of its domain and parse the rest as an endpoint host.
+	labels := strings.Split(host, ".")
+	if len(labels) <= 2 {
+		return nil
+	}
+	return labels[:len(labels)-2]
+}
+
+// endpointService returns the service name of an endpoint from its labels and the position of its
+// region label, which is len(labels) for endpoints without a region. The service name usually
+// precedes the region, but some endpoints, such as the EKS cluster endpoints, place it after.
+func endpointService(labels []string, regionIndex int) string {
+	if service := firstServiceLabel(labels[min(regionIndex+1, len(labels)):]); service != "" {
+		return service
 	}
 
-	host = strings.Trim(host, service)
-	serviceRegions := partitionServices[service].Regions()
-	for _, part := range strings.Split(host, ".") {
-		if id := serviceRegions[part].ID(); id != "" {
-			return service, id
+	beforeRegion := slices.Clone(labels[:min(regionIndex, len(labels))])
+	slices.Reverse(beforeRegion)
+	return firstServiceLabel(beforeRegion)
+}
+
+// firstServiceLabel returns the first of the given labels that can be a service name, skipping the
+// labels AWS adds to endpoint hosts around the service name.
+func firstServiceLabel(labels []string) string {
+	for _, label := range labels {
+		if awsEndpointLabels[label] {
+			continue
+		}
+		return strings.TrimSuffix(label, "-fips")
+	}
+	return ""
+}
+
+// isAWSRegion reports whether the given hostname label is an AWS region name.
+func isAWSRegion(label string) bool {
+	if !awsRegionRegexp.MatchString(label) {
+		return false
+	}
+	// Labels such as "fips-us-gov-west-1" carry an endpoint modifier and are not a region name.
+	prefix, _, _ := strings.Cut(label, "-")
+	return !awsEndpointLabels[prefix]
+}
+
+// splitServiceRegion splits a hostname label that joins the service name and the region, as the
+// older style AWS endpoints do, for instance "s3-us-west-2" or "s3-fips-us-gov-west-1".
+func splitServiceRegion(label string) (string, string, bool) {
+	for i, char := range label {
+		if char != '-' {
+			continue
+		}
+		if region := label[i+1:]; isAWSRegion(region) {
+			return strings.TrimSuffix(label[:i], "-fips"), region, true
 		}
 	}
-	return service, ""
+	return "", "", false
+}
+
+// partitionDNSSuffixes returns the DNS suffixes of all the known AWS partitions. The partition
+// metadata of the v2 SDK is internal to it, so the copy that the aws-iam-authenticator project
+// maintains for the same reason is reused here rather than duplicating the data once more.
+func partitionDNSSuffixes() []string {
+	suffixes := make([]string, 0, 2*len(endpoints.PARTITIONS))
+	for _, partition := range endpoints.PARTITIONS {
+		domain, err := endpoints.GetSTSPartitionDomain(partition)
+		if err != nil {
+			// Only returned for unknown partitions, which the listed ones are not.
+			continue
+		}
+		suffixes = append(suffixes, domain)
+
+		if dualStackDomain := endpoints.GetSTSDualStackPartitionDomain(partition); dualStackDomain != "" {
+			suffixes = append(suffixes, dualStackDomain)
+		}
+	}
+
+	slices.Sort(suffixes)
+	suffixes = slices.Compact(suffixes)
+	// Longest first, so that for instance "amazonaws.com.cn" is matched before "amazonaws.com".
+	slices.SortStableFunc(suffixes, func(a, b string) int { return len(b) - len(a) })
+
+	return suffixes
 }
