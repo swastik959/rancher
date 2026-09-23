@@ -14,9 +14,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
+	ekstypes "github.com/aws/aws-sdk-go-v2/service/eks/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
-	"github.com/aws/aws-sdk-go/aws/awserr"
-	"github.com/aws/aws-sdk-go/service/eks"
 	eksv1 "github.com/rancher/eks-operator/pkg/apis/eks.cattle.io/v1"
 	"github.com/rancher/eks-operator/utils"
 	apimgmtv3 "github.com/rancher/rancher/pkg/apis/management.cattle.io/v3"
@@ -662,8 +661,6 @@ func (e *eksOperatorController) getRestConfig(ctx context.Context, cluster *mgmt
 }
 
 func notFound(err error) bool {
-	if awsErr, ok := err.(awserr.Error); ok {
-		return awsErr.Code() == eks.ErrCodeResourceNotFoundException
-	}
-	return false
+	var notFoundErr *ekstypes.ResourceNotFoundException
+	return errors.As(err, &notFoundErr)
 }
