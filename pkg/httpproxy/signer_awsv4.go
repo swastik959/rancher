@@ -61,6 +61,64 @@ var awsRegionRegexp = regexp.MustCompile(`^[a-z]{2,}(-[a-z0-9]+)+-\d+$`)
 // "iam.us-gov.amazonaws.com" or "vpce-0123.ec2.us-east-1.vpce.amazonaws.com".
 var awsNonServiceLabels = []string{"api", "dualstack", "fips", "us-gov", "vpce"}
 
+var requiredHeadersForAws = map[string]bool{"host": true,
+	"x-amz-content-sha256": true,
+	"x-amz-date":           true,
+	"x-amz-user-agent":     true}
+
+func (a awsv4) sign(req *http.Request, secrets SecretGetter, auth string) error {
+	_, secret, err := getAuthData(auth, secrets, []string{"credID"})
+	if err != nil {
+		return err
+	}
+	service, region := a.getServiceAndRegion(req.URL.Host)
+	credentialProvider := credentials.NewStaticCredentialsProvider(secret["accessKey"], secret["secretKey"], "")
+	awsSigner := v4.NewSigner()
+	var body []byte
+	if req.Body != nil {
+		body, err = io.ReadAll(req.Body)
+		if err != nil {
+			return fmt.Errorf("error reading request body %v", err)
+		}
+	}
+
+	h := sha256.New()
+	h.Write(body)
+	payloadHash := hex.EncodeToString(h.Sum(nil))
+
+	oldHeader, newHeader := http.Header{}, http.Header{}
+	for header, value := range req.Header {
+		if _, ok := requiredHeadersForAws[strings.ToLower(header)]; ok {
+			newHeader[header] = value
+		} else {
+			oldHeader[header] = value
+		}
+	}
+	req.Header = newHeader
+	err = awsSigner.SignHTTP(req.Context(), credentialProvider.Value, req, payloadHash, service, region, time.Now())
+	if err != nil {
+		return err
+	}
+
+	// The V2 SDK does not implement internally the sign with body method as per https://github.com/aws/aws-sdk-go/blob/main/aws/signer/v4/v4.go#L357
+	// Therefore we need the below in order for the body to be included with the forwarded request.
+
+	var (
+		reader     io.ReadCloser
+		ok         bool
+		bodyReader io.ReadSeeker = bytes.NewReader(body)
+	)
+	if reader, ok = bodyReader.(io.ReadCloser); !ok {
+		reader = io.NopCloser(bodyReader)
+	}
+	req.Body = reader
+
+	for key, val := range oldHeader {
+		req.Header.Add(key, strings.Join(val, ""))
+	}
+	return nil
+}
+
 func (a awsv4) getServiceAndRegion(host string) (string, string) {
 	service, region := parseAWSEndpoint(host)
 
@@ -178,62 +236,4 @@ func awsServiceLabel(label string) string {
 		return ""
 	}
 	return label
-}
-
-var requiredHeadersForAws = map[string]bool{"host": true,
-	"x-amz-content-sha256": true,
-	"x-amz-date":           true,
-	"x-amz-user-agent":     true}
-
-func (a awsv4) sign(req *http.Request, secrets SecretGetter, auth string) error {
-	_, secret, err := getAuthData(auth, secrets, []string{"credID"})
-	if err != nil {
-		return err
-	}
-	service, region := a.getServiceAndRegion(req.URL.Host)
-	credentialProvider := credentials.NewStaticCredentialsProvider(secret["accessKey"], secret["secretKey"], "")
-	awsSigner := v4.NewSigner()
-	var body []byte
-	if req.Body != nil {
-		body, err = io.ReadAll(req.Body)
-		if err != nil {
-			return fmt.Errorf("error reading request body %v", err)
-		}
-	}
-
-	h := sha256.New()
-	h.Write(body)
-	payloadHash := hex.EncodeToString(h.Sum(nil))
-
-	oldHeader, newHeader := http.Header{}, http.Header{}
-	for header, value := range req.Header {
-		if _, ok := requiredHeadersForAws[strings.ToLower(header)]; ok {
-			newHeader[header] = value
-		} else {
-			oldHeader[header] = value
-		}
-	}
-	req.Header = newHeader
-	err = awsSigner.SignHTTP(req.Context(), credentialProvider.Value, req, payloadHash, service, region, time.Now())
-	if err != nil {
-		return err
-	}
-
-	// The V2 SDK does not implement internally the sign with body method as per https://github.com/aws/aws-sdk-go/blob/main/aws/signer/v4/v4.go#L357
-	// Therefore we need the below in order for the body to be included with the forwarded request.
-
-	var (
-		reader     io.ReadCloser
-		ok         bool
-		bodyReader io.ReadSeeker = bytes.NewReader(body)
-	)
-	if reader, ok = bodyReader.(io.ReadCloser); !ok {
-		reader = io.NopCloser(bodyReader)
-	}
-	req.Body = reader
-
-	for key, val := range oldHeader {
-		req.Header.Add(key, strings.Join(val, ""))
-	}
-	return nil
 }
